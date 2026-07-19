@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import io
 
 # Page configuration for a clean, professional corporate dashboard layout
 st.set_page_config(page_title="SMETA 7.0 Social Compliance Digital Portal", layout="wide")
@@ -28,7 +29,7 @@ lead_auditor = st.sidebar.text_input("Lead Auditor / HRBP", value="[Input Name]"
 scope_profile = st.sidebar.text_area("Scope Parameters", value="Excluding HSE / Focused strictly on Governance, Policies, Employment Act 1955, and Supplier Reporting Awareness.")
 
 # -----------------------------------------------------------------------------
-# INITIAL DATA STRUCTURES WITH EXPLICIT POLICY INJECTIONS
+# INITIAL DATA STRUCTURES
 # -----------------------------------------------------------------------------
 @st.cache_data
 def get_initial_data():
@@ -95,13 +96,26 @@ if 'df_gov' not in st.session_state:
     st.session_state.df_gov, st.session_state.df_lab, st.session_state.df_sup = get_initial_data()
 
 # -----------------------------------------------------------------------------
-# DYNAMIC CALCULATION ENGINE
+# DYNAMIC CALCULATION ENGINE & REPORT PREP
 # -----------------------------------------------------------------------------
 df_all = pd.concat([st.session_state.df_gov, st.session_state.df_lab, st.session_state.df_sup], ignore_index=True)
 total_criteria = len(df_all)
 compliant_count = len(df_all[df_all["Compliance Status"] == "Compliant"])
-nc_count = len(df_all[df_all["Compliance Status"].isin(["Minor NC", "Major NC", "Critical NC", "CAR"])])
+nc_df = df_all[df_all["Compliance Status"].isin(["Minor NC", "Major NC", "Critical NC", "CAR"])]
+nc_count = len(nc_df)
 compliance_rate = (compliant_count / total_criteria) * 100 if total_criteria > 0 else 100.0
+
+breakdown_data = {
+    "Audit Domain Section": ["1. Governance & Management Systems", "2. Labour Practices & EA 1955", "3. Supply Chain Governance"],
+    "Total Scope Items": [len(st.session_state.df_gov), len(st.session_state.df_lab), len(st.session_state.df_sup)],
+    "Compliant Items": [
+        len(st.session_state.df_gov[st.session_state.df_gov["Compliance Status"] == "Compliant"]),
+        len(st.session_state.df_lab[st.session_state.df_lab["Compliance Status"] == "Compliant"]),
+        len(st.session_state.df_sup[st.session_state.df_sup["Compliance Status"] == "Compliant"])
+    ]
+}
+df_breakdown = pd.DataFrame(breakdown_data)
+df_breakdown["Domain Score (%)"] = (df_breakdown["Compliant Items"] / df_breakdown["Total Scope Items"]) * 100
 
 # -----------------------------------------------------------------------------
 # PORTAL WORKSPACE INTERFACE TABS
@@ -113,7 +127,6 @@ tab_dash, tab_gov, tab_lab, tab_sup = st.tabs([
     "🤝 3. Supply Chain Due Diligence"
 ])
 
-# STATUS CONFIGURATION FOR DATA GRID DROPDOWNS
 status_config = st.column_config.SelectboxColumn(
     "Compliance Status",
     help="Select localized workplace standard threshold match",
@@ -136,29 +149,26 @@ with tab_dash:
     with c4:
         st.markdown(f'<div class="kpi-card">Overall Compliance Rating<br><span class="kpi-val">{compliance_rate:.1f}%</span></div>', unsafe_allow_html=True)
         
+    # --- INTERACTIVE NON-COMPLIANCE VIEWER ---
+    if nc_count > 0:
+        st.markdown("<br>", unsafe_allow_html=True)
+        with st.expander(f"🚨 Click to view details for the {nc_count} Active Non-Compliances", expanded=False):
+            st.dataframe(
+                nc_df[["Ref ID", "Sub-Category", "Criteria Details", "Compliance Status", "Auditor Findings & Observed Evidence"]], 
+                use_container_width=True, 
+                hide_index=True
+            )
+            
     st.markdown("---")
     st.markdown("### Profile Snapshot Details")
     st.write(f"**Target Company / Location:** {audited_entity} | **Audit Team Head:** {lead_auditor} | **Date Listed:** {audit_date}")
     
-    # Display domain summary breakdowns
     st.markdown("### Sector Performance Metrics")
-    breakdown_data = {
-        "Audit Domain Section": ["1. Governance & Management Systems", "2. Labour Practices & EA 1955", "3. Supply Chain Governance"],
-        "Total Scope Items": [len(st.session_state.df_gov), len(st.session_state.df_lab), len(st.session_state.df_sup)],
-        "Compliant Items": [
-            len(st.session_state.df_gov[st.session_state.df_gov["Compliance Status"] == "Compliant"]),
-            len(st.session_state.df_lab[st.session_state.df_lab["Compliance Status"] == "Compliant"]),
-            len(st.session_state.df_sup[st.session_state.df_sup["Compliance Status"] == "Compliant"])
-        ]
-    }
-    df_breakdown = pd.DataFrame(breakdown_data)
-    df_breakdown["Domain Score (%)"] = (df_breakdown["Compliant Items"] / df_breakdown["Total Scope Items"]) * 100
     st.dataframe(df_breakdown.style.format({"Domain Score (%)": "{:.1f}%"}), use_container_width=True)
 
 # --- TAB 2: GOVERNANCE & MANAGEMENT ---
 with tab_gov:
     st.markdown("### Pillar 1: Business Governance & Management Systems Assessment")
-    st.markdown("Editable Matrix Grid: Click directly on fields to update compliance statuses or enter text comments.")
     st.session_state.df_gov = st.data_editor(
         st.session_state.df_gov,
         column_config={"Compliance Status": status_config},
@@ -170,7 +180,6 @@ with tab_gov:
 # --- TAB 3: LABOUR PRACTICES & EA 1955 ---
 with tab_lab:
     st.markdown("### Pillar 2: Labour Standards & Malaysian Employment Act 1955 Compliance")
-    st.markdown("Includes standalone policy parameters for *Grievances, Sexual Harassment (Sec 81B), and Progressive Misconduct*.")
     st.session_state.df_lab = st.data_editor(
         st.session_state.df_lab,
         column_config={"Compliance Status": status_config},
@@ -182,7 +191,6 @@ with tab_lab:
 # --- TAB 4: SUPPLY CHAIN DUE DILIGENCE ---
 with tab_sup:
     st.markdown("### Pillar 3: Supply Chain Governance & Contractor Due Diligence")
-    st.markdown("Includes downstream contractor metrics and *Tier-1 Supplier Workforce Reporting Awareness* metrics.")
     st.session_state.df_sup = st.data_editor(
         st.session_state.df_sup,
         column_config={"Compliance Status": status_config},
@@ -192,18 +200,23 @@ with tab_sup:
     )
 
 # -----------------------------------------------------------------------------
-# REPORT EXPORT GENERATION UTILITY
+# REPORT EXPORT GENERATION UTILITY (FULL EXCEL WORKBOOK)
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.subheader("Export Audit Artifacts")
 
-# Compile consolidated session state updates back into a unified sheet for export
-df_export = pd.concat([st.session_state.df_gov, st.session_state.df_lab, st.session_state.df_sup], ignore_index=True)
-csv_buffer = df_export.to_csv(index=False).encode('utf-8')
+# Build the Excel file directly in memory
+buffer = io.BytesIO()
+with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+    # Write each dataframe to a specific sheet
+    df_breakdown.to_excel(writer, sheet_name='Summary_Dashboard', index=False)
+    st.session_state.df_gov.to_excel(writer, sheet_name='1_Governance', index=False)
+    st.session_state.df_lab.to_excel(writer, sheet_name='2_Labor_Practices', index=False)
+    st.session_state.df_sup.to_excel(writer, sheet_name='3_Supply_Chain', index=False)
 
 st.sidebar.download_button(
-    label="⬇️ Download Audit Report (CSV)",
-    data=csv_buffer,
-    file_name=f"SMETA_7.0_Digital_Audit_{audited_entity.replace(' ', '_')}.csv",
-    mime="text/csv"
+    label="⬇️ Download Full Audit Report (Excel)",
+    data=buffer.getvalue(),
+    file_name=f"SMETA_7.0_Full_Audit_{audited_entity.replace(' ', '_')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
